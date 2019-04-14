@@ -1,0 +1,396 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    " ### Prerequisite  : Download the dataset and Install boto client library"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "!wget https://raw.githubusercontent.com/ksingh7/analyzing_ufo_dataset_with_spark/master/UFO_dataset_kaggle.csv\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import sys\n",
+    "!{sys.executable} -m pip install pyspark\n",
+    "!{sys.executable} -m pip install boto\n",
+    "!{sys.executable} -m pip install plotly\n",
+    "!{sys.executable} -m pip install plotly --upgrade"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    " ### Prerequisite  : Set PySpark Envirnoment Variables  --packages=com.databricks:spark-csv_2.10:1.3.0"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "%set_env PYSPARK_SUBMIT_ARGS=--packages=org.apache.hadoop:hadoop-aws:2.7.3 pyspark-shell "
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    " ## Step - 1 : Connect to Ceph Object Storage Cluster using S3 API and verify your connection"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import boto\n",
+    "import boto.s3.connection\n",
+    "\n",
+    "AWS_KEY = 'S3user1'\n",
+    "AWS_SECRET = 'S3user1key'\n",
+    "CEPH_S3_ENDPOINT = '34.233.143.39'\n",
+    "S3_SSL = 'False'\n",
+    "\n",
+    "\n",
+    "conn = boto.connect_s3(\n",
+    "        aws_access_key_id = AWS_KEY,\n",
+    "        aws_secret_access_key = AWS_SECRET,\n",
+    "        host = CEPH_S3_ENDPOINT,\n",
+    "        is_secure=False,\n",
+    "        calling_format = boto.s3.connection.OrdinaryCallingFormat(),\n",
+    "        )\n",
+    "\n",
+    "for bucket in conn.get_all_buckets():\n",
+    "     print(bucket.name, bucket.creation_date)\n",
+    "\n",
+    "        "
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    " ## Step - 2  : Upload your Dataset to Ceph Object Storage Bucket"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from boto.s3.key import Key\n",
+    "\n",
+    "bucket_name = \"karans-dataset\"\n",
+    "object_key = \"UFO_dataset_kaggle.csv\"\n",
+    "object_value = \"UFO_dataset_kaggle.csv\"\n",
+    "protocol = \"s3a://\"\n",
+    "\n",
+    "bucket = conn.get_bucket(bucket_name)\n",
+    "\n",
+    "k = Key(bucket)\n",
+    "k.key = object_key\n",
+    "k.set_contents_from_filename(object_value)\n",
+    "\n",
+    "#print(object_key, bucket_name)\n",
+    "\n",
+    "#for key in bucket.list():\n",
+    "#    print(key.name, key.size, key.last_modified)\n",
+    "\n",
+    "s3a_object_name = protocol + bucket_name + '/' + key.name\n",
+    "\n",
+    "print('Your dataset path is : ' + s3a_object_name)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Step-3 : Create a Spark Session for Data Analysis"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import pyspark\n",
+    "\n",
+    "from pyspark.context import SparkContext\n",
+    "from pyspark.sql import SparkSession, SQLContext\n",
+    "\n",
+    "spark = SparkSession\\\n",
+    "    .builder\\\n",
+    "    .master(\"local\")\\\n",
+    "    .appName(\"UFO_Analysis_using_SPARK\")\\\n",
+    "    .getOrCreate()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Step-4 : Configure Spark to use Ceph S3 Object Storage"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "hadoopConf=spark.sparkContext._jsc.hadoopConfiguration()\n",
+    "hadoopConf.set(\"fs.s3a.access.key\", AWS_KEY)\n",
+    "hadoopConf.set(\"fs.s3a.secret.key\", AWS_SECRET)\n",
+    "hadoopConf.set(\"fs.s3a.endpoint\", CEPH_S3_ENDPOINT)\n",
+    "hadoopConf.set(\"fs.s3a.connection.ssl.enabled\", S3_SSL)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Step-5 : Load the Dataset from Ceph object storage to Spark Data Frame"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "sc = SparkContext.getOrCreate()\n",
+    "sqlContext = SQLContext(sc)\n",
+    "\n",
+    "ceph_object_storage_dataset_path = \"s3a://karans-dataset/UFO_dataset_kaggle.csv\"\n",
+    "\n",
+    "df0 = spark.read.csv(ceph_object_storage_dataset_path, header=True)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Step-6 : Before starting dataset analysis, verify the schema"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "df0.printSchema()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Business Question - 1 : What are the TOP-5 countries which reported UFO sighting"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "plot1 = df0.groupBy(\"country\").count().toPandas()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Answer - 1 "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import plotly \n",
+    "plotly.tools.set_credentials_file(username='xxx', api_key='xxxx')\n",
+    "\n",
+    "import plotly.plotly as py\n",
+    "import plotly.graph_objs as go\n",
+    "\n",
+    "data1 = [go.Bar(\n",
+    "    x=plot1['country'],\n",
+    "    y=plot1['count'],\n",
+    "    width = 0.8 \n",
+    ")]\n",
+    "py.iplot(data1, filename='basic-bar')\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Business Question - 2 : Which are the TOP-20 cities which reported UFO sighting"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "plot2 = df0.groupBy(\"city\").count().orderBy(df0.city.desc()).toPandas()\n",
+    "plot2 = plot2.sort_values(by=['count'],ascending=False).head(20)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Answer - 2"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "data2 = [go.Bar(\n",
+    "    x=plot2['city'],\n",
+    "    y=plot2['count'], \n",
+    ")]\n",
+    "py.iplot(data2, filename='basic-bar')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Business Question - 3 : How does a UFO Look Like ?"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "plot3 = df0.groupBy(\"shape\").count().orderBy(df0.shape.desc()).toPandas()\n",
+    "plot3 = plot3.sort_values(by=['count'],ascending=False).head(20)\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Answer - 3"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "data3 = [go.Bar(\n",
+    "    x=plot3['shape'],\n",
+    "    y=plot3['count']\n",
+    ")]\n",
+    "py.iplot(data3, filename='basic-bar')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Business Question - 4 : Which are the TOP-10 cities reporting UFO as \"Light\""
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from pyspark.sql.functions import desc\n",
+    "\n",
+    "import pandas as pd\n",
+    "plot4 = df0.groupBy(\"city\",\"shape\").count().filter(df0.shape == 'light').sort(desc(\"count\")).toPandas().head(10)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Answer - 4"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "data4 = [go.Bar(\n",
+    "    x=plot4['city'],\n",
+    "    y=plot4['count']\n",
+    ")]\n",
+    "py.iplot(data4, filename='basic-bar')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Step-7 : Destroy your Spark Cluster"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "spark.stop()"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.7.3"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
